@@ -847,20 +847,37 @@ func _draw_far_minimap(r: Rect2, card: Dictionary, a: float) -> void:
 			draw_rect(brect, _ca(Color("#d3a343"), a), false, 2.0)
 		var blabel := String(blk.get("label", ""))
 		if blabel != "":
-			var lp: Array = blk.get("label_pos", [0.5, 0.5])
-			var lx := r.position.x + float(lp[0]) * r.size.x
-			var ly := r.position.y + float(lp[1]) * r.size.y
-			draw_string(map.font_hei, Vector2(lx, ly + 5.0), blabel, HORIZONTAL_ALIGNMENT_LEFT, -1, 10.0, lcol)
+			# 自动计算字号：坊名占坊宽3/4
+			var target_w: float = bw * 0.75
+			var est_fs: float = target_w / float(maxi(blabel.length(), 1)) * 1.8
+			var vert_fs: float = bh * 0.35
+			var fs: float = clampf(minf(est_fs, vert_fs), 8.0, 22.0)
+			var tw: float = map.font_hei.get_string_size(blabel, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			var cx: float = bx + bw * 0.5
+			var cy: float = by + bh * 0.5
+			draw_string(map.font_hei, Vector2(cx - tw * 0.5, cy + fs * 0.35), blabel, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, label_col_light)
 	# draw center label (for roads)
 	if mm_data.has("center_label"):
 		var cl: Dictionary = mm_data["center_label"]
 		var clx := r.position.x + float(cl.get("x", 0.5)) * r.size.x
 		var cly := r.position.y + float(cl.get("y", 0.5)) * r.size.y
 		var clt := String(cl.get("text", ""))
-		if cl.get("rotated", false):
-			draw_string(map.font_hei, Vector2(clx, cly), clt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10.0, lcol)
-		else:
-			draw_string(map.font_hei, Vector2(clx, cly + 5.0), clt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10.0, lcol)
+		if clt != "":
+			var road_fs: float = clampf(r.size.x / float(maxi(clt.length(), 1)) * 1.2, 9.0, 18.0)
+			if cl.get("rotated", false):
+				# 竖向道路：逐字竖排，字序从上到下
+				var char_h: float = road_fs * 1.1
+				var total_h: float = float(clt.length()) * char_h
+				var start_y: float = cly - total_h * 0.5
+				for ci2 in range(clt.length()):
+					var ch: String = clt[ci2]
+					var chw: float = map.font_hei.get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs).x
+					var chy: float = start_y + float(ci2) * char_h
+					draw_string(map.font_hei, Vector2(clx - chw * 0.5, chy + road_fs * 0.8), ch, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs, lcol)
+			else:
+				# 横向道路：水平居中
+				var htw: float = map.font_hei.get_string_size(clt, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs).x
+				draw_string(map.font_hei, Vector2(clx - htw * 0.5, cly + road_fs * 0.35), clt, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs, lcol)
 	# draw arrows
 	var arrows: Array = mm_data.get("arrows", [])
 	for arr in arrows:
@@ -998,10 +1015,12 @@ func _draw_panel() -> void:
 	draw_line(cc + Vector2(-3, 3), cc + Vector2(3, -3), _ca(Color("#dfc784"), a), 1.5)
 
 	var p: Dictionary = map._selected
-	if map._knowledge_card_back:
+	if map._panel_page == 1:
+		_draw_card_front(p, type, r, a)
+	elif map._panel_page == 2:
 		_draw_card_back(p, type, r, a)
 	else:
-		_draw_card_front(p, type, r, a)
+		_draw_card_spatial(p, type, r, a)
 
 func _draw_card_front(p: Dictionary, type: String, r: Rect2, a: float) -> void:
 	var name := String(p.get("name", ""))
@@ -1063,6 +1082,162 @@ func _draw_card_back(p: Dictionary, type: String, r: Rect2, a: float) -> void:
 	_text_left(map.font_hei, "史料原文", 10.0, _ca(Color("#c99b45"), a), Vector2(x + 10.0, y + 16.0))
 	_draw_card_text("“" + quote + "”", x + 10.0, y + 23.0, w - 20.0, 4, a, Color("#c8c6ae"), 11.0)
 	_text_right(map.font_hei, "点击卡片返回正面", 9.0, _ca(Color("#9aaa94"), a), Vector2(r.end.x - 26.0, r.end.y - 14.0))
+
+
+func _spatial_description(p: Dictionary, type: String) -> String:
+	var name := String(p.get("name", ""))
+	var desc := String(p.get("description", ""))
+	var zone := String(p.get("zone", ""))
+	var location := String(p.get("location", ""))
+	var function_text := String(p.get("function", ""))
+	if type.contains("路") or type.contains("街") or type.contains("道"):
+		var parts: PackedStringArray = PackedStringArray()
+		if desc != "": parts.append(desc)
+		if function_text != "": parts.append(function_text + "。")
+		if location != "": parts.append("路径：" + location + "。")
+		if parts.is_empty():
+			return name + "是唐长安城的重要街道。"
+		return "".join(parts)
+	elif type.contains("坊") or type.contains("里坊"):
+		var parts: PackedStringArray = PackedStringArray()
+		if zone != "": parts.append("位于" + zone + "。")
+		if location != "": parts.append(location + "。")
+		if function_text != "": parts.append(function_text + "。")
+		if desc != "": parts.append(desc)
+		if parts.is_empty():
+			return name + "是唐长安城的里坊之一。"
+		return "".join(parts)
+	elif type.contains("门"):
+		var parts: PackedStringArray = PackedStringArray()
+		if desc != "": parts.append(desc)
+		if location != "": parts.append(location + "。")
+		if parts.is_empty():
+			return name + "是长安城的重要门户。"
+		return "".join(parts)
+	elif type.contains("渠") or type.contains("水"):
+		var parts: PackedStringArray = PackedStringArray()
+		if desc != "": parts.append(desc)
+		if function_text != "": parts.append(function_text + "。")
+		if parts.is_empty():
+			return name + "是长安城的水系组成部分。"
+		return "".join(parts)
+	if desc != "":
+		return desc
+	return name + "的空间关系正在整理中。"
+
+func _draw_card_spatial(p: Dictionary, type: String, r: Rect2, a: float) -> void:
+	# Title
+	_text_center(map.font_song, "空间关系", 20.0, _ca(Color("#c99b45"), a), Vector2(r.get_center().x, r.position.y + 52.0))
+	_text_center(map.font_hei, _card_subtitle(p, type), 12.0, _ca(Color("#9aaa94"), a), Vector2(r.get_center().x, r.position.y + 78.0))
+	# Mini-map area
+	var mm_rect := Rect2(r.position.x + 24.0, r.position.y + 100.0, r.size.x - 48.0, 280.0)
+	_draw_panel_minimap(mm_rect, a)
+	# Spatial description below mini-map
+	var desc_text := _spatial_description(p, type)
+	var desc_y := mm_rect.end.y + 16.0
+	var desc_w := r.size.x - 56.0
+	var desc_x := r.position.x + 28.0
+	_draw_card_text(desc_text, desc_x, desc_y, desc_w, 5, a, Color("#c8c6ae"), 12.0)
+	# Bottom hint
+	_text_center(map.font_hei, "点击卡片切换页面", 9.0, _ca(Color("#9aaa94"), a), Vector2(r.get_center().x, r.end.y - 18.0))
+	# Page indicator
+	var indicator_y := r.end.y - 40.0
+	for i in range(3):
+		var ix := r.get_center().x - 20.0 + float(i) * 20.0
+		var is_active: bool = map._panel_page == (i + 1)
+		var dot_col := Color("#c99b45") if is_active else Color("#9aaa94", 0.5)
+		draw_circle(Vector2(ix, indicator_y), 3.0 if is_active else 2.0, _ca(dot_col, a))
+
+func _draw_panel_minimap(r: Rect2, a: float) -> void:
+	# Background
+	_round_rect_fill(r, 6.0, _ca(Color("#e8e3d5"), a))
+	# Grid lines
+	var grid_col := _ca(Color("#83afba", 0.4), a)
+	var gx := r.position.x
+	while gx < r.end.x:
+		draw_line(Vector2(gx, r.position.y), Vector2(gx, r.end.y), grid_col, 0.5)
+		gx += 28.0
+	var gy := r.position.y
+	while gy < r.end.y:
+		draw_line(Vector2(r.position.x, gy), Vector2(r.end.x, gy), grid_col, 0.5)
+		gy += 28.0
+	_round_rect_stroke(r, 6.0, _ca(Color("#806638", 0.33), a), 1.0)
+	# Get mini_map data
+	var mm_data: Dictionary = map._panel_mini_map
+	if mm_data.is_empty():
+		_text_center(map.font_hei, "暂无空间数据", 13.0, _ca(Color("#9aaa94"), a), r.get_center())
+		return
+	# Draw routes
+	var routes: Array = mm_data.get("routes", [])
+	for route in routes:
+		var rd: String = str(route.get("dir", "v"))
+		var rp: float = float(route.get("pos", 0.5))
+		var rw: float = float(route.get("width", 0.008)) * r.size.x
+		if rw < 4.0: rw = 6.0
+		if rd == "v":
+			var rx := r.position.x + rp * r.size.x
+			draw_rect(Rect2(rx - rw * 0.5, r.position.y, rw, r.size.y), _ca(Color("#d3a343"), a))
+		else:
+			var ry := r.position.y + rp * r.size.y
+			draw_rect(Rect2(r.position.x, ry - rw * 0.5, r.size.x, rw), _ca(Color("#d3a343"), a))
+	# Draw blocks
+	var blocks: Array = mm_data.get("blocks", [])
+	for blk in blocks:
+		var br: Array = blk.get("rect", [0.1, 0.1, 0.3, 0.3])
+		var bx := r.position.x + float(br[0]) * r.size.x
+		var by := r.position.y + float(br[1]) * r.size.y
+		var bw := float(br[2]) * r.size.x
+		var bh := float(br[3]) * r.size.y
+		var brect := Rect2(bx, by, bw, bh)
+		var is_focus: bool = blk.get("focus", false)
+		var is_alt: bool = blk.get("alt", false)
+		var bcol := Color("#272b28") if is_focus else (Color("#656a65") if is_alt else Color("#373b38"))
+		draw_rect(brect, _ca(bcol, a))
+		if is_focus:
+			draw_rect(brect, _ca(Color("#d3a343"), a), false, 2.0)
+		var blabel: String = str(blk.get("label", ""))
+		if blabel != "":
+			var lcol := Color("#f0e4c4")
+			# 自动计算字号：坊名占坊宽3/4
+			var target_w: float = bw * 0.75
+			var est_fs: float = target_w / float(maxi(blabel.length(), 1)) * 1.8
+			var vert_fs: float = bh * 0.35
+			var fs: float = clampf(minf(est_fs, vert_fs), 8.0, 22.0)
+			var tw: float = map.font_hei.get_string_size(blabel, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			var cx: float = bx + bw * 0.5
+			var cy: float = by + bh * 0.5
+			draw_string(map.font_hei, Vector2(cx - tw * 0.5, cy + fs * 0.35), blabel, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ca(lcol, a))
+	# Draw center label (for roads)
+	if mm_data.has("center_label"):
+		var cl: Dictionary = mm_data["center_label"]
+		var clx := r.position.x + float(cl.get("x", 0.5)) * r.size.x
+		var cly := r.position.y + float(cl.get("y", 0.5)) * r.size.y
+		var clt: String = cl.get("text", "")
+		if clt != "":
+			var road_fs: float = clampf(r.size.x / float(maxi(clt.length(), 1)) * 1.2, 9.0, 18.0)
+			if cl.get("rotated", false):
+				# 竖向道路：逐字竖排，字序从上到下
+				var char_h: float = road_fs * 1.1
+				var total_h: float = float(clt.length()) * char_h
+				var start_y: float = cly - total_h * 0.5
+				for ci2 in range(clt.length()):
+					var ch: String = clt[ci2]
+					var chw: float = map.font_hei.get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs).x
+					var chy: float = start_y + float(ci2) * char_h
+					draw_string(map.font_hei, Vector2(clx - chw * 0.5, chy + road_fs * 0.8), ch, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs, _ca(Color("#2a2a2a"), a))
+			else:
+				# 横向道路：水平居中
+				var htw: float = map.font_hei.get_string_size(clt, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs).x
+				draw_string(map.font_hei, Vector2(clx - htw * 0.5, cly + road_fs * 0.35), clt, HORIZONTAL_ALIGNMENT_LEFT, -1, road_fs, _ca(Color("#2a2a2a"), a))
+	# Draw arrows
+	var arrows: Array = mm_data.get("arrows", [])
+	for arr in arrows:
+		var ax := r.position.x + float(arr.get("x", 0.5)) * r.size.x
+		var ay := r.position.y + float(arr.get("y", 0.5)) * r.size.y
+		var at: String = arr.get("text", "")
+		draw_string(map.font_hei, Vector2(ax, ay + 5.0), at, HORIZONTAL_ALIGNMENT_LEFT, -1, 11.0, _ca(Color("#855c19"), a))
+	# Border
+	_round_rect_stroke(r, 6.0, _ca(Color("#c99b45", 0.5), a), 1.5)
 
 func _card_texture_for(p: Dictionary, type: String) -> Texture2D:
 	return _card_textures.get(_card_texture_key(p, type))
