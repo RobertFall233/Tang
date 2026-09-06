@@ -100,12 +100,16 @@ func _compute_diamond_uv() -> void:
 	uv_right = d["right"]
 
 func _draw() -> void:
+	var zcam: float = 0.04
+	if map != null and map._camera != null:
+		zcam = map._camera.zoom.x
+	if zcam <= 0.0:
+		zcam = 0.04
 	var fang_scale := 1.0
 	if map != null:
-		var zoom: float = map._camera.zoom.x
 		# 仅在极远（低于远景下限，正常不可达）时放大保持可见；远景 0.0095 以上保持自然缩放
-		if zoom < 0.007:
-			fang_scale = 0.1 / maxf(zoom, 0.0001)
+		if zcam < 0.007:
+			fang_scale = 0.1 / maxf(zcam, 0.0001)
 	var hw := fang_w * 0.5 * fang_scale * 9.9   # 东西宽度方向 ×2 补偿等距压缩
 	var hh := fang_h * 0.5 * fang_scale * 9.9   # 南北深度方向保持不变
 	var NW := Vector2((-hw - hh) * 6.4, (-hw + hh) * 3.2)
@@ -113,47 +117,49 @@ func _draw() -> void:
 	var SE := Vector2((hw + hh) * 6.4, (hw - hh) * 3.2)
 	var SW := Vector2((-hw + hh) * 6.4, (-hw - hh) * 3.2)
 
-	# 渲染贴图或默认颜色（图片已是完整等轴坊渲染，不再额外加黑色描边/3D侧壁，避免黑边）
-	if tex:
+	# 中/近景与远景之间的纹理渐显系数：随相机缩放连续过渡（约1秒）
+	# 0=远景（淡色框+轮廓）, 1=中/近景（贴图渐显到不透明）
+	var far_z: float = 0.0095
+	var mid_z: float = 0.04
+	if map != null and map.ZOOM_LEVELS.size() >= 2:
+		far_z = map.ZOOM_LEVELS[0]
+		mid_z = map.ZOOM_LEVELS[1]
+	var tex_fade: float = clampf((zcam - far_z) / (mid_z - far_z), 0.0, 1.0)
+	if map != null:
+		tex_fade = map._ease_in_out_cubic(tex_fade)
+	# 远景淡色框随 tex_fade 升高而淡出
+	if tex_fade < 0.999:
+		_poly(PackedVector2Array([NW, NE, SE, SW]), Color(0.80, 0.76, 0.60, 0.30 * (1.0 - tex_fade)))
+		var rim_w := maxf(1.0 / zcam, 1.0)
+		var rim_a := 0.85 * (1.0 - tex_fade)
+		if rim_a > 0.01:
+			draw_polyline(PackedVector2Array([NW, NE, SE, SW, NW]), Color(0.52, 0.45, 0.30, rim_a), rim_w, true)
+	# 中/近景：贴图随 tex_fade 从透明渐显到不透明
+	if tex_fade > 0.005 and tex:
 		var pts := PackedVector2Array([NW, NE, SE, SW])
 		# 内容菱形四顶点映射到地块菱形四角（NW=左, NE=下, SE=右, SW=上）
 		var uvs := PackedVector2Array([uv_left, uv_bottom, uv_right, uv_top])
-		var colors := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
-		draw_polygon(pts, colors, uvs, tex)
-	else:
+		var fc := Color(1, 1, 1, tex_fade)
+		draw_polygon(pts, PackedColorArray([fc, fc, fc, fc]), uvs, tex)
+	elif tex_fade <= 0.005 and tex == null:
 		_poly(PackedVector2Array([NW, NE, SE, SW]), Color("#cdbb8f"))
-	# 坊名标签：中景及以上（_zoom_idx>=1）显示。直接 draw_string 渲染，
-	# 不创建 SubViewport —— 在 _draw 里新建/变更 SubViewport 树会偶发卡死/报错。
-	# 字号 = 14/zoom（屏幕恒定），须在缩放过程中由 map 逐帧触发重绘校准。
-	if fang_name != "" and map != null and map._zoom_idx >= 1:
-		var zoom: float = map._camera.zoom.x
-		if zoom <= 0.0:
-			zoom = 1.0
-		var fs := 14.0 / zoom
-		var font: Font = map.font_song
-		var chars := fang_name.split("")
-		var char_w := 0.0
-		for c in chars:
-			char_w = maxf(char_w, font.get_string_size(c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x)
-		var line_h := fs * 1.15
-		var px := fs * 0.4
-		var py := fs * 0.3
-		var cw := char_w + px * 2.0
-		var ch := line_h * chars.size() + py * 2.0
-		var rect := Rect2(-cw * 0.5, -ch * 0.5, cw, ch)
-		draw_rect(rect, Color(0.12, 0.10, 0.08, 0.85))
-		draw_rect(rect, Color(0.75, 0.68, 0.55, 0.6), false, maxf(1.0 / zoom, 1.0))
-		var text_color := Color(0.95, 0.92, 0.85)
-		for i in range(chars.size()):
-			var c: String = chars[i]
-			var cx_w: float = font.get_string_size(c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-			var cy := -ch * 0.5 + py + line_h * i + fs * 0.8
-			draw_string(font, Vector2(-cx_w * 0.5, cy), c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, text_color)
+	# 坊名标签已移入顶层绘制层 scenes/fang_labels.gd（World/FangLabels），保证不被遮挡。
+	# 本节点只负责坊体/远景色框。
 
 func set_map_ref(m) -> void:
 	map = m
 
 func _poly(points: PackedVector2Array, color: Color) -> void:
 	var idx := Geometry2D.triangulate_polygon(points)
+	if idx.size() < 3:
+		return
 	for t in range(0, idx.size(), 3):
-		draw_colored_polygon(PackedVector2Array([points[idx[t]], points[idx[t + 1]], points[idx[t + 2]]]), color)
+		var tri := PackedVector2Array([points[idx[t]], points[idx[t + 1]], points[idx[t + 2]]])
+		var a := tri[0]
+		var b := tri[1]
+		var c := tri[2]
+		# 跳过退化/共线三角形（大坐标下 triangulation 偶发失败）
+		var cross := (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+		if not is_finite(cross) or absf(cross) < 1.0:
+			continue
+		draw_colored_polygon(tri, color)

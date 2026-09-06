@@ -1,4 +1,4 @@
-﻿extends Node2D
+extends Node2D
 
 # 唐长安城 2.5D 45°等距鸟瞰场景
 # Tang Chang'an — 45° isometric bird's-eye view, 3 zoom levels via mouse wheel.
@@ -92,6 +92,13 @@ const EW_FANG_NAMES := [
 
 var font_song: Font
 var font_hei: Font
+var font_qiji: Font
+var font_times: Font
+var fang_tag_tex: Texture2D
+var btn_frame_tex: Texture2D
+var clock_tex: Texture2D
+var dial_tex: Texture2D      # 右上时钟表盘（表盘.png）
+var hand_tex: Texture2D      # 右上时钟指针（指针.png，黑底已转透明，长=分针/短=时针共用）
 var _points: Array = []
 var _cfg: Dictionary = {}
 var _square_tex: Array = []  # 正方形坊贴图
@@ -102,6 +109,8 @@ var _camera: Camera2D
 var _selected: Dictionary = {}
 var _selected_fang := Vector2(-1, -1)
 var _hover_fang := Vector2(-1, -1)
+# 皇宫（宫城+皇城整体）步坐标命中范围，由 _build_world 皇宫节点创建时写入；无效=(-1,-1)
+var _palace_step_rect := Rect2(-1.0, -1.0, 0.0, 0.0)
 var _local_text := ""
 var _loading := false
 var _error := ""
@@ -127,6 +136,10 @@ var _timeline: Array = []
 var _clock_open := false
 var _hist_open := false
 var _hist_scroll := 0.0
+var _hist_anim := 0.0          # 大事记面板从下到上滑入动画：0=收起, 1=展开
+var _hist_anim_target := 0.0
+var _hist_selected := -1       # 当前展开细节的大事记索引（-1=无）
+var _hist_detail_anim := 0.0   # 细节框往下展开的动画：0=收起, 1=展开
 var _year_anim := false
 var _year_anim_t := 0.0
 var _year_to := 740
@@ -162,8 +175,9 @@ var _cam_to_pos := Vector2.ZERO
 var _panel_raw := 1.0
 var _panel_anim_t := 1.0
 var _panel_opening := true
-var _panel_page := 1
-var _panel_mini_map: Dictionary = {}
+var _knowledge_card_back := false
+var _card_flip_anim := 0.0    # 建筑知识卡翻转动画：0=正面, 1=反面（cos 翻转）
+var _card_flip_target := 0.0
 var _chat_scroll := 0.0
 var _groups: Array = []
 var _pending_group := -1
@@ -202,6 +216,7 @@ var _world
 var _npcs_node
 var _markers_node
 var _outline_layer
+var _fang_labels  # 顶层坊名标签层（World/FangLabels，z 最高）
 
 # camera zoom state
 # 三档离散（近/中/远按钮吸附用）
@@ -242,15 +257,20 @@ var _outline_progress := 0.0
 var _outline_target := 0.0
 var _prev_fang := Vector2(-1, -1)
 
-# 时间轴收起/展开切换按钮区域（展开按钮在底部窄条中央；收起按钮在时间轴上方中央，两者同尺寸同视觉）
+# 时间轴收起/展开切换按钮区域（与左侧功能按钮同风格横条；收起钮贴底、展开钮在时间轴上方中央）
 func timeline_toggle_rect() -> Rect2:
 	if _timeline_collapsed:
-		return Rect2(560.0, 694.0, 160.0, 26.0)
-	return Rect2(560.0, 614.0, 160.0, 26.0)
+		return Rect2(580.0, 686.0, 120.0, 34.0)
+	return Rect2(580.0, 610.0, 120.0, 34.0)
 
 func toggle_timeline() -> void:
 	_timeline_collapsed = not _timeline_collapsed
 	_timeline_anim_target = 0.0 if _timeline_collapsed else 1.0
+	# 收起时间轴时同步关闭大事记面板及其细节介绍
+	if _timeline_collapsed:
+		_hist_open = false
+		_hist_anim_target = 0.0
+		_hist_selected = -1
 	if _ui:
 		_ui.queue_redraw()
 # 收起/展开切换按钮区域（左下角）
@@ -289,11 +309,10 @@ func _sync_hud_guards() -> void:
 			btn.visible = show
 			if btn is CanvasItem:
 				btn.modulate.a = clampf(le, 0.0, 1.0)
-	# 时间轴收起：底部深色带随动画收窄/展开，并淡出对应守卫条
+	# 时间轴收起：底部改为渐变绘制（见 ui_overlay，隐藏实色块避免突兀）
 	var bottom_band = hud.get_node_or_null("BottomOpaqueBand")
 	if bottom_band:
-		var e := _ease_in_out_cubic(clampf(_timeline_anim, 0.0, 1.0))
-		bottom_band.offset_top = lerpf(690.0, 602.0, e)
+		bottom_band.visible = false
 	var show_g := _timeline_anim > 0.05
 	for n in ["BottomUpperGuard", "BottomLeftGuard", "BottomRightGuard", "BottomLowerGuard"]:
 		var g = hud.get_node_or_null(n)
@@ -350,6 +369,8 @@ func _ready() -> void:
 	NetworkManager.chat_response.connect(_on_chat_response)
 	_snap_far_entry()
 	_redraw_world()
+	# 长安城背景音乐（MusicManager 自动交叉淡入；回首页时切「Chang'an Dawn」）
+	MusicManager.play("city")
 
 # 进入 ChangAnCity 即为远景（整城约 60%）快照：把相机直接放到远景档，
 # 而非历史遗留的 _set_zoom(3)（会被 clamp 到近景）。
@@ -367,11 +388,39 @@ func _snap_far_entry() -> void:
 		_ui.queue_redraw()
 
 func _setup_fonts() -> void:
-	var kf := SystemFont.new()
-	kf.font_names = PackedStringArray(["QIJIFALLBACK", "Kaiti SC", "Kaiti", "STKaiti", "KaiTi", "Songti SC", "STHeiti", "PingFang SC"])
-	kf.allow_system_fallback = true
-	font_song = kf
-	font_hei = kf
+	# 中文 qiji-fallback，英文/数字 Times New Roman（均打包，FontFile 加载，全平台一致）
+	font_song = FontKit.composite()
+	font_hei = FontKit.composite()
+	font_qiji = FontKit.cjk()
+	# 时间轴/大事记的公元年份数字用 Times New Roman（打包）
+	font_times = FontKit.latin()
+	# 新美术素材：坊名标签底图 / 左栏按钮框 / 时钟贴图
+	fang_tag_tex = load("res://assets/ui/fang_label_tag.png") if ResourceLoader.exists("res://assets/ui/fang_label_tag.png") else null
+	btn_frame_tex = load("res://assets/ui/btn_frame.png") if ResourceLoader.exists("res://assets/ui/btn_frame.png") else null
+	clock_tex = load("res://assets/ui/clock.png") if ResourceLoader.exists("res://assets/ui/clock.png") else null
+	# 右上角时钟：表盘 + 指针（指针黑底在绘制层转透明；同一指针素材复制为分针/时针）
+	dial_tex = clock_tex  # 时钟使用 clock.png（而非 dial_face.png）
+	hand_tex = _key_out_black("res://assets/ui/hand_needle.png") if ResourceLoader.exists("res://assets/ui/hand_needle.png") else null
+
+# 把黑底 PNG 转成透明底纹理（避免叠加黑色方块）。阈值：RGB 均低于阈值视为背景。
+func _key_out_black(path: String) -> Texture2D:
+	var tex: Texture2D = load(path)
+	if tex == null:
+		return null
+	var img := tex.get_image()
+	if img == null:
+		return null
+	img.convert(Image.FORMAT_RGBA8)
+	var th := 0.28   # 亮度阈值（黑背景 0 ~ 金色/亮色 >0.3）
+	var w := img.get_width()
+	var h := img.get_height()
+	for y in range(h):
+		for x in range(w):
+			var c := img.get_pixel(x, y)
+			var lum := c.r * 0.299 + c.g * 0.587 + c.b * 0.114
+			if lum < th:
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(img)
 
 func _sync_from_data() -> void:
 	_points = DataManager.points
@@ -730,28 +779,47 @@ func _build_world() -> void:
 						node.set("uv_rotation_degrees", uv.rot)
 			fangs_node.add_child(node)
 			node.call("set_map_ref", self)
-	# ---- 皇宫大贴图（覆盖 ci=3-6, si=0-3 共12坊区域）----
-	var palace_tex_path := "res://assets/fang/皇宫01.png"
-	print("=== 皇宫贴图路径: " + palace_tex_path + " 存在: " + str(ResourceLoader.exists(palace_tex_path)) + " ===")
-	if ResourceLoader.exists(palace_tex_path):
-		var palace_sprite := Sprite2D.new()
-		palace_sprite.name = "皇宫贴图"
-		var loaded_tex = load(palace_tex_path)
-		print("=== 皇宫贴图加载: " + str(loaded_tex != null) + " ===")
-		palace_sprite.texture = loaded_tex
-		# 直接用坐标函数计算，避免常量缓存不一致
-		var palace_w := _ns_x(7) - (_ns_x(3) + float(NS_STREET_WIDTHS[3]))
-		var palace_h := (_ew_y(4)) - float(EW_STREET_WIDTHS[0])
-		var px := _ns_x(3) + float(NS_STREET_WIDTHS[3]) + palace_w * 0.5 - palace_w * 0.02
-		var py := float(EW_STREET_WIDTHS[0]) + palace_h * 0.5
-		palace_sprite.position = _step_iso(px, py)
-		palace_sprite.scale = Vector2(16.8, 16.0)
-		print("=== 皇宫贴图: pos=" + str(px) + "," + str(py) + " ===")
-		palace_sprite.z_index = 10000
-		fangs_node.add_child(palace_sprite)
-		print("=== 皇宫贴图已添加 ===")
-	else:
-		print("=== 皇宫贴图文件不存在! ===")
+	# ---- 皇宫（宫城+皇城整体）贴图：中/近景显示贴图与标签，远景由 fang_tile far_view 显示占位框与标签 ----
+	var palace_path := "res://assets/fang/皇宫01.png"
+	if ResourceLoader.exists(palace_path):
+		var palace_tex: Texture2D = load(palace_path)
+		# 皇宫区域：ci=3-6, si=0-3（宫城+皇城共12坊大小）
+		# 西边缘=ci=3坊西边缘，东边缘=ci=7坊东边缘，北=si=0坊北缘，南=si=4坊南缘
+		var p_west := 0.0
+		for ci in range(3):
+			p_west += float(NS_FANG_WIDTHS[ci]) + float(NS_STREET_WIDTHS[ci])
+		var p_east := p_west + float(NS_FANG_WIDTHS[3]) + float(NS_STREET_WIDTHS[3]) + float(NS_FANG_WIDTHS[4]) + float(NS_STREET_WIDTHS[4]) + float(NS_FANG_WIDTHS[5]) + float(NS_STREET_WIDTHS[5]) + float(NS_FANG_WIDTHS[6])
+		var p_north := 0.0
+		var p_south := float(EW_FANG_DEPTHS[0]) + float(EW_STREET_WIDTHS[1]) + float(EW_FANG_DEPTHS[1]) + float(EW_STREET_WIDTHS[2]) + float(EW_FANG_DEPTHS[2]) + float(EW_STREET_WIDTHS[3]) + float(EW_FANG_DEPTHS[3])
+		var pcx := (p_west + p_east) * 0.5
+		var pcy := (p_north + p_south) * 0.5
+		var pw_steps := p_east - p_west
+		var pw := pw_steps * STEP
+		var ph := (p_south - p_north) * STEP
+		# E方向偏移：皇宫ew方向总宽度的3%（向右下微调对位）
+		var e_offset := pw_steps * 0.03
+		var offset_x := e_offset * STEP * 64.0
+		var offset_y := e_offset * STEP * 32.0
+		var pnode := Node2D.new()
+		pnode.set_script(FangScript)
+		pnode.name = "皇宫"
+		pnode.position = _step_iso(pcx, pcy) + Vector2(offset_x, offset_y)
+		pnode.set("fang_name", "宫城")
+		pnode.set("fang_w", pw)
+		pnode.set("fang_h", ph)
+		pnode.set("cell", Vector2(5, 2))
+		# z 提到合法上限：盖过横贯宫城/皇城的街道网格（南北街 4095），
+		# 顶层 FangLabels 同为 4096 但在 World 末尾创建（后画），保证标签在最上。
+		pnode.set("z_index", 4096)
+		pnode.set("tex", palace_tex)
+		# UV缩放修正：ew方向扩大8%，ns方向缩小10%
+		pnode.set("uv_scale_ew", 0.926)
+		pnode.set("uv_scale_ns", 1.111)
+		fangs_node.add_child(pnode)
+		pnode.call("set_map_ref", self)
+		# 记录皇宫整体步坐标矩形（供点击命中）
+		_palace_step_rect = Rect2(p_west, p_north, p_east - p_west, p_south - p_north)
+		print("=== 皇宫贴图加载完毕 ===")
 	var fang_area_ew := float(NS_FANG_WIDTHS.reduce(func(a, b): return a + b, 0)) + float(NS_STREET_WIDTHS.reduce(func(a, b): return a + b, 0))  # = 9663
 	var fang_area_ns := float(EW_FANG_DEPTHS.reduce(func(a, b): return a + b, 0)) + float(EW_STREET_WIDTHS.reduce(func(a, b): return a + b, 0)) - float(EW_STREET_WIDTHS[0]) - float(EW_STREET_WIDTHS[13])  # 不含南北边界路
 	for si in range(15):
@@ -782,7 +850,7 @@ func _build_world() -> void:
 		node.set("road_width", int(float(EW_STREET_WIDTHS[mini(si, 13)])))
 		node.set("road_length", int(road_len))
 		node.set("z_index", int(road_y * 0.4))
-		node.set("color", Color("#8fb8c9"))
+		node.set("color", Color("#7fae92"))
 		streets_node.add_child(node)
 		node.call("set_map_ref", self)
 	# ---- 创建南北向街道（只覆盖坊区域）----
@@ -814,9 +882,21 @@ func _build_world() -> void:
 		node.set("road_width", int(float(NS_STREET_WIDTHS[mini(ci, 10)])))
 		node.set("road_length", int(road_len))
 		node.set("z_index", 4095)
-		node.set("color", Color("#7daab8"))
+		node.set("color", Color("#6f9d84"))
 		streets_node.add_child(node)
 		node.call("set_map_ref", self)
+
+	# ---- 顶层坊名标签层：挂在 World 最后、z 最高，保证坊标签盖过坊框/街道/建筑 ----
+	var labels_node = get_node_or_null("World/FangLabels")
+	if labels_node == null:
+		var FangLabelsScript := load("res://scenes/fang_labels.gd")
+		labels_node = Node2D.new()
+		labels_node.name = "FangLabels"
+		labels_node.set_script(FangLabelsScript)
+		labels_node.z_index = 4096
+		_world.add_child(labels_node)
+	_fang_labels = labels_node
+	_fang_labels.set_map_ref(self)
 
 func _redraw_world() -> void:
 	if _world:
@@ -825,6 +905,8 @@ func _redraw_world() -> void:
 		_npcs_node.queue_redraw()
 	if _markers_node:
 		_markers_node.queue_redraw()
+	if _fang_labels:
+		_fang_labels.queue_redraw()
 
 func _build_ui() -> void:
 	_ui = get_node("UI/Overlay")
@@ -924,6 +1006,8 @@ func _refresh_fang_labels() -> void:
 	if fangs_node:
 		for child in fangs_node.get_children():
 			child.queue_redraw()
+	if _fang_labels:
+		_fang_labels.queue_redraw()
 
 func _ease_out_cubic(t: float) -> float:
 	var u := 1.0 - t
@@ -984,6 +1068,21 @@ func _update_ui_anims(delta: float) -> void:
 			_ui.queue_redraw()
 	if absf(_clock_popup_anim - _clock_popup_anim_target) > 0.0005:
 		_clock_popup_anim = lerpf(_clock_popup_anim, _clock_popup_anim_target, delta * 8.0)
+		if _ui:
+			_ui.queue_redraw()
+	if absf(_hist_anim - _hist_anim_target) > 0.0005:
+		_hist_anim = lerpf(_hist_anim, _hist_anim_target, delta * 7.0)
+		if _ui:
+			_ui.queue_redraw()
+	if _hist_anim <= 0.02 and _hist_selected >= 0:
+		_hist_selected = -1
+		_hist_detail_anim = 0.0
+	if absf(_hist_detail_anim - (1.0 if _hist_selected >= 0 else 0.0)) > 0.0005:
+		_hist_detail_anim = lerpf(_hist_detail_anim, (1.0 if _hist_selected >= 0 else 0.0), delta * 8.0)
+		if _ui:
+			_ui.queue_redraw()
+	if absf(_card_flip_anim - _card_flip_target) > 0.0005:
+		_card_flip_anim = lerpf(_card_flip_anim, _card_flip_target, delta * 9.0)
 		if _ui:
 			_ui.queue_redraw()
 	if absf(_outline_progress - _outline_target) > 0.0005:
@@ -1149,13 +1248,23 @@ func hist_popup_rect() -> Rect2:
 
 func hist_event_rect(i: int) -> Rect2:
 	var pr := hist_popup_rect()
-	return Rect2(pr.position.x + 16.0, pr.position.y + 56.0 + float(i) * 44.0 - _hist_scroll, pr.size.x - 32.0, 40.0)
+	# 展开的细节框会把其后的行往下推（回流），避免遮住下方内容
+	var dy := 0.0
+	if _hist_selected >= 0 and i > _hist_selected:
+		dy = _hist_detail_shift()
+	return Rect2(pr.position.x + 16.0, pr.position.y + 56.0 + float(i) * 52.0 - _hist_scroll + dy, pr.size.x - 32.0, 48.0)
+
+# 展开细节框对下方行的下推量（随非线性动画同步推进）
+func _hist_detail_shift() -> float:
+	if _hist_selected < 0:
+		return 0.0
+	return _ease_in_out_cubic(clampf(_hist_detail_anim, 0.0, 1.0)) * 74.0
 
 # 大事记列表最大滚动量（保证最后一项不滚出可视区）
 func hist_max_scroll() -> float:
 	var pr := hist_popup_rect()
 	var list_h := pr.size.y - 56.0 - 12.0
-	var content_h := float(_timeline.size()) * 44.0
+	var content_h := float(_timeline.size()) * 52.0 + _hist_detail_shift()
 	return maxf(0.0, content_h - list_h)
 
 # 时间轴某事件点在屏幕上的位置（与 ui_overlay._draw_hist_timeline 的 bar 计算一致）
@@ -1887,16 +1996,28 @@ func _handle_click(screen_pos: Vector2) -> void:
 		_clock_popup_anim = 0.0
 		_clock_popup_anim_target = 1.0
 		_hist_open = false
+		_hist_anim_target = 0.0
+		_hist_selected = -1
 		_ui.queue_redraw()
 		return
 	if _hist_open:
-		_hist_open = false
-		_ui.queue_redraw()
 		if hist_popup_rect().has_point(ui_pos):
 			for i in range(_timeline.size()):
 				if hist_event_rect(i).has_point(ui_pos):
+					# 点击事件：跳转到该年 + 展开/收起细节
 					_jump_to_year(int(_timeline[i]["year"]))
+					if _hist_selected == i:
+						_hist_selected = -1  # 点击同一事件：收起
+					else:
+						_hist_selected = i
+						_hist_detail_anim = 0.0  # 换事件时重启打开动画（上一个自然滑出）
+					_ui.queue_redraw()
 					return
+			return
+		_hist_open = false
+		_hist_anim_target = 0.0
+		_hist_selected = -1   # 关闭时细节框随之反向收起
+		_ui.queue_redraw()
 		return
 	if _codex_open:
 		if codex_panel_rect().has_point(ui_pos):
@@ -1931,15 +2052,17 @@ func _handle_click(screen_pos: Vector2) -> void:
 	if HIST_TIMELINE_RECT.has_point(ui_pos):
 		if _timeline_collapsed:
 			return
-		# 点击时间轴：先打开大事记卡片，再按事件点滚动定位并跳转年份
+		# 点击时间轴：打开长安城大事记（从下到上非线性滑入）
 		_hist_open = true
+		_hist_anim = 0.0
+		_hist_anim_target = 1.0
+		_hist_selected = -1
+		_hist_detail_anim = 0.0
 		var ev_idx := timeline_event_at_x(ui_pos.x)
 		if ev_idx >= 0:
-			# 点击具体大事记点：滚动定位 + 年份动画跳转（时钟/日月实时流转 + 大圆滑动）
 			_hist_scroll = maxf(0.0, float(ev_idx) * 44.0 - 6.0)
-			_jump_to_year(int(_timeline[ev_idx]["year"]))
-			return
-		_hist_scroll = 0.0
+		else:
+			_hist_scroll = 0.0
 		_ui.queue_redraw()
 		return
 	# far-view card click handling
@@ -1964,7 +2087,8 @@ func _handle_click(screen_pos: Vector2) -> void:
 			_deselect()
 			return
 		if BUILDING_PANEL_RECT.has_point(ui_pos):
-			_panel_page = (_panel_page % 3) + 1
+			_knowledge_card_back = not _knowledge_card_back
+			_card_flip_target = 1.0 if _knowledge_card_back else 0.0
 			_ui.queue_redraw()
 			return
 	var sgi := _speaking_group_at(screen_pos)
@@ -1976,6 +2100,12 @@ func _handle_click(screen_pos: Vector2) -> void:
 	if not hit.is_empty():
 		_selected_fang = Vector2(-1, -1)
 		_select(hit)
+		return
+	# 皇宫（宫城+皇城整体贴图）命中：位于大矩形内 → 打开皇宫知识卡
+	if _palace_at(world_pos):
+		_selected_fang = Vector2(-1, -1)
+		_select(_palace_data())
+		_redraw_world()
 		return
 	var fang := _fang_at(world_pos)
 	if fang.x >= 0:
@@ -2000,6 +2130,30 @@ func _world_to_step(world_pos: Vector2) -> Vector2:
 	var sx := (world_pos.x / (STEP * 64.0) + world_pos.y / (STEP * 32.0)) * 0.5
 	var sy := (world_pos.y / (STEP * 32.0) - world_pos.x / (STEP * 64.0)) * 0.5
 	return Vector2(sx, sy)
+
+# 皇宫区域点击命中：点击坐标转换到步坐标后落在皇宫大矩形内即命中
+func _palace_at(world_pos: Vector2) -> bool:
+	if _palace_step_rect.size.x <= 0.0 or _palace_step_rect.size.y <= 0.0:
+		return false
+	var step := _world_to_step(world_pos)
+	return _palace_step_rect.has_point(step)
+
+# 皇宫知识卡数据（宫城+皇城整体）
+func _palace_data() -> Dictionary:
+	return {
+		"key": "PALACE-宫城皇城",
+		"name": "宫城",
+		"trad": "皇城",
+		"type": "宫殿",
+		"zone": "长安城北 · 宫城与皇城",
+		"description": "宫城是皇帝居住与处理朝政的宫殿区，位于长安城北部中央；其南为皇城，集中分布中央官署。二者合称皇宫，是唐长安城的政治中枢。",
+		"location": "宫城（北）与皇城（南），朱雀门街中轴线北端",
+		"function": "皇帝朝寝与中央官署理政之地",
+		"built": "隋开皇二年（582年）始建大兴城宫城",
+		"aliases": "宫城; 皇城; 皇宫",
+		"quote": "北据高原，南望爽垲，宫殿台阁，周回数里。",
+		"source": "《唐两京城坊考》卷一·宫城/皇城",
+	}
 
 # 矩形点击检测：世界坐标 → 命中的坊 (si, ci)，未命中返回 Vector2(-1, -1)
 func _fang_at(world_pos: Vector2) -> Vector2:
@@ -2224,45 +2378,12 @@ func _gen_route(rng: RandomNumberGenerator) -> Array:
 	return pts
 
 func _update_npcs(delta: float) -> void:
-	if _zoom_idx < 1:
-		return
-	for g in _groups:
-		var route: Array = g["route"]
-		var wp: int = g["wp"]
-		var target: Vector2 = route[wp]
-		var cur := Vector2(g["c"], g["r"])
-		var dirv := target - cur
-		var dist := dirv.length()
-		var step: float = g["speed"] * delta
-		if dist <= step:
-			g["c"] = target.x
-			g["r"] = target.y
-			g["wp"] = (wp + 1) % route.size()
-		else:
-			dirv /= dist
-			g["c"] += dirv.x * step
-			g["r"] += dirv.y * step
-	_redraw_world()
+	# 路人 NPC 已按需求停用（不绘制、不移动），保持空转以免多余开销/隐形热区。
+	return
 
 func _update_speaking(delta: float) -> void:
-	for s in _speaking:
-		s["remain"] -= delta
-		s["age"] += delta
-	var before := _speaking.size()
-	_speaking = _speaking.filter(func(s): return s["remain"] > 0.0)
-	_speak_spawn_timer -= delta
-	if _speak_spawn_timer <= 0.0 and _speaking.size() < 2 and _groups.size() > 0:
-		_speak_spawn_timer = randf_range(3.0, 8.0)
-		var gi := randi_range(0, _groups.size() - 1)
-		var dup := false
-		for s in _speaking:
-			if int(s["gi"]) == gi:
-				dup = true
-				break
-		if not dup:
-			_speaking.append({"gi": gi, "remain": randf_range(6.0, 12.0), "age": 0.0})
-	if before != _speaking.size() or _speak_spawn_timer <= 0.0:
-		_redraw_world()
+	# 说话气泡图标已按需求停用（连同头顶小人图标一并移除）。
+	return
 
 func _speaking_group_at(screen_pos: Vector2) -> int:
 	if _zoom_idx < 1:
@@ -2394,8 +2515,9 @@ func _select(p: Dictionary) -> void:
 	_panel_raw = 0.0
 	_panel_anim_t = 0.0
 	_panel_opening = true
-	_panel_page = 1
-	_panel_mini_map = _build_panel_minimap(p)
+	_knowledge_card_back = false
+	_card_flip_anim = 0.0
+	_card_flip_target = 0.0
 	_chat_scroll = 0.0
 	_intro_text = ""
 	_intro_visible = 0
