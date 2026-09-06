@@ -12,9 +12,19 @@ var uv_bottom := Vector2(0.5, 1.0)
 var uv_left := Vector2(0.0, 0.5)
 var uv_right := Vector2(1.0, 0.5)
 
+# ========== UV缩放调整（可手动修改） ==========
+# 沿等轴测轴方向缩放（非水平/垂直！）
+# ew: 沿等轴测↘方向（垂直线顺时针120°）
+# ns: 沿等轴测↙方向（垂直线逆时针120°）
+# > 1.0 = 贴图缩小, < 1.0 = 贴图放大
+var uv_scale_ew := 1.0
+var uv_scale_ns := 1.0
+# UV旋转角度（顺时针为正，单位：度）
+var uv_rotation_degrees := 0.0
+# =============================================
+
 const SIDE := Color("#8a7348")
 const INK := Color("#3a362e")
-
 # 每张贴图的内容菱形 UV 缓存（同一贴图只算一次）
 static var _uv_cache: Dictionary = {}
 
@@ -26,10 +36,13 @@ func _ready() -> void:
 # 由贴图 alpha 内容包围盒，求出内容菱形四顶点 UV（四边中点 = 菱形角），
 # 解决图片四周透明留白导致的"黑边 + 内容与地块菱形错位"
 func _compute_diamond_uv() -> void:
-	var key := String(tex.resource_path)
+	var key := String(tex.resource_path) + "_rot" + str(uv_rotation_degrees)
 	if _uv_cache.has(key):
 		var d: Dictionary = _uv_cache[key]
-		uv_top = d["top"]; uv_bottom = d["bottom"]; uv_left = d["left"]; uv_right = d["right"]
+		uv_top = d["top"]
+		uv_bottom = d["bottom"]
+		uv_left = d["left"]
+		uv_right = d["right"]
 		return
 	var img := tex.get_image()
 	if img == null:
@@ -48,20 +61,50 @@ func _compute_diamond_uv() -> void:
 		return
 	var cxf := float(x0 + x1) * 0.5 / float(w)
 	var cyf := float(y0 + y1) * 0.5 / float(h)
+	var center := Vector2(cxf, cyf)
+	var half_w_uv := (float(x1 - x0) / float(w)) * 0.5
+	var half_h_uv := (float(y1 - y0) / float(h)) * 0.5
+	# 等轴测UV缩放：转换到等轴测基(1,1)/(1,-1)缩放后转回
+	var se := uv_scale_ew
+	var sn := uv_scale_ns
+	var scale_a := (se + sn) * 0.5
+	var scale_b := (se - sn) * 0.5
+	var top_off := Vector2(0, -half_h_uv)
+	var bot_off := Vector2(0, half_h_uv)
+	var left_off := Vector2(-half_w_uv, 0)
+	var right_off := Vector2(half_w_uv, 0)
+	# 等轴测缩放后的UV偏移
+	var top_scaled := Vector2(top_off.x*scale_a + top_off.y*scale_b, top_off.x*scale_b + top_off.y*scale_a)
+	var bot_scaled := Vector2(bot_off.x*scale_a + bot_off.y*scale_b, bot_off.x*scale_b + bot_off.y*scale_a)
+	var left_scaled := Vector2(left_off.x*scale_a + left_off.y*scale_b, left_off.x*scale_b + left_off.y*scale_a)
+	var right_scaled := Vector2(right_off.x*scale_a + right_off.y*scale_b, right_off.x*scale_b + right_off.y*scale_a)
+	# UV旋转（绕中心）
+	if abs(uv_rotation_degrees) > 0.001:
+		var angle := uv_rotation_degrees * PI / 180.0
+		var cos_a := cos(angle)
+		var sin_a := sin(angle)
+		top_scaled = Vector2(top_scaled.x*cos_a - top_scaled.y*sin_a, top_scaled.x*sin_a + top_scaled.y*cos_a)
+		bot_scaled = Vector2(bot_scaled.x*cos_a - bot_scaled.y*sin_a, bot_scaled.x*sin_a + bot_scaled.y*cos_a)
+		left_scaled = Vector2(left_scaled.x*cos_a - left_scaled.y*sin_a, left_scaled.x*sin_a + left_scaled.y*cos_a)
+		right_scaled = Vector2(right_scaled.x*cos_a - right_scaled.y*sin_a, right_scaled.x*sin_a + right_scaled.y*cos_a)
 	var d := {
-		"top": Vector2(cxf, float(y0) / float(h)),
-		"bottom": Vector2(cxf, float(y1) / float(h)),
-		"left": Vector2(float(x0) / float(w), cyf),
-		"right": Vector2(float(x1) / float(w), cyf),
+		"top": center + top_scaled,
+		"bottom": center + bot_scaled,
+		"left": center + left_scaled,
+		"right": center + right_scaled,
 	}
 	_uv_cache[key] = d
-	uv_top = d["top"]; uv_bottom = d["bottom"]; uv_left = d["left"]; uv_right = d["right"]
+	uv_top = d["top"]
+	uv_bottom = d["bottom"]
+	uv_left = d["left"]
+	uv_right = d["right"]
 
 func _draw() -> void:
 	var fang_scale := 1.0
 	if map != null:
 		var zoom: float = map._camera.zoom.x
-		if zoom < 0.01:
+		# 仅在极远（低于远景下限，正常不可达）时放大保持可见；远景 0.0095 以上保持自然缩放
+		if zoom < 0.007:
 			fang_scale = 0.1 / maxf(zoom, 0.0001)
 	var hw := fang_w * 0.5 * fang_scale * 9.9   # 东西宽度方向 ×2 补偿等距压缩
 	var hh := fang_h * 0.5 * fang_scale * 9.9   # 南北深度方向保持不变
@@ -79,20 +122,33 @@ func _draw() -> void:
 		draw_polygon(pts, colors, uvs, tex)
 	else:
 		_poly(PackedVector2Array([NW, NE, SE, SW]), Color("#cdbb8f"))
-	# 坊名标签
-	if fang_name != "" and map != null and map._zoom_idx >= 2:
+	# 坊名标签：中景及以上（_zoom_idx>=1）显示。直接 draw_string 渲染，
+	# 不创建 SubViewport —— 在 _draw 里新建/变更 SubViewport 树会偶发卡死/报错。
+	# 字号 = 14/zoom（屏幕恒定），须在缩放过程中由 map 逐帧触发重绘校准。
+	if fang_name != "" and map != null and map._zoom_idx >= 1:
 		var zoom: float = map._camera.zoom.x
 		if zoom <= 0.0:
 			zoom = 1.0
 		var fs := 14.0 / zoom
 		var font: Font = map.font_song
-		var w: float = font.get_string_size(fang_name, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-		var o := 1.0 / zoom
-		var off := 26.0 / zoom
-		for ox in [-o, o]:
-			for oy in [-o, o]:
-				draw_string(font, Vector2(-w * 0.5 + ox, -off + oy), fang_name, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.95, 0.92, 0.85, 0.9))
-		draw_string(font, Vector2(-w * 0.5, -off), fang_name, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, INK)
+		var chars := fang_name.split("")
+		var char_w := 0.0
+		for c in chars:
+			char_w = maxf(char_w, font.get_string_size(c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x)
+		var line_h := fs * 1.15
+		var px := fs * 0.4
+		var py := fs * 0.3
+		var cw := char_w + px * 2.0
+		var ch := line_h * chars.size() + py * 2.0
+		var rect := Rect2(-cw * 0.5, -ch * 0.5, cw, ch)
+		draw_rect(rect, Color(0.12, 0.10, 0.08, 0.85))
+		draw_rect(rect, Color(0.75, 0.68, 0.55, 0.6), false, maxf(1.0 / zoom, 1.0))
+		var text_color := Color(0.95, 0.92, 0.85)
+		for i in range(chars.size()):
+			var c: String = chars[i]
+			var cx_w: float = font.get_string_size(c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			var cy := -ch * 0.5 + py + line_h * i + fs * 0.8
+			draw_string(font, Vector2(-cx_w * 0.5, cy), c, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, text_color)
 
 func set_map_ref(m) -> void:
 	map = m
