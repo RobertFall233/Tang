@@ -1,8 +1,8 @@
-extends Control
-# 列表裁剪容器：自身实现绘制（self 为本容器），clip_contents 将内容裁剪到本容器 rect 内，
-# 实现滚动时"遮罩式"裁剪——条目超出面板边框的部分被隐藏。
+﻿extends Control
+# 
+#
 
-var overlay  # 引用 ui_overlay（读取 map、纹理、hover 状态）
+var overlay  # 
 var kind := ""  # "hist" / "codex"
 
 const BRK := TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_GRAPHEME_BOUND
@@ -27,71 +27,142 @@ func _draw_codex_cards() -> void:
 	var area: Rect2 = map.codex_card_area()
 	var csize: Vector2 = map.codex_card_size()
 	var stride: float = map.codex_card_stride()
-	var entries: Array = map.codex_entries(map._codex_cat)
-	var collected: Array = map.codex_collected_list(map._codex_cat)
+	var entries: Array = map._cards_of_type(map._card_type_idx)
 	var center_screen := Vector2(area.get_center().x, area.get_center().y)
-	var anim: float = map._codex_focus_anim
+	var anim: float = map._card_focus_anim
+	var page_anim: float = map._card_page_anim
 	for i in range(entries.size()):
 		var d := anim - float(i)
 		if absf(d) > 1.7:
 			continue
 		var fd := clampf(absf(d), 0.0, 1.0)
 		var focus_amount := 1.0 - fd
-		var scale := lerpf(1.0, 0.84, fd)
-		var w := csize.x * scale
-		var h := csize.y * scale
+		var sc := lerpf(1.0, 0.84, fd)
+		var w := csize.x * sc
+		var h := csize.y * sc
 		var cx := center_screen.x - d * stride
 		var card_screen := Rect2(cx - w * 0.5, center_screen.y - h * 0.5, w, h)
 		var card := Rect2(card_screen.position - position, card_screen.size)
-		_draw_codex_card(card, entries[i], collected, focus_amount)
+		_draw_knowledge_card(card, entries[i], focus_amount, page_anim, map)
 
-func _draw_codex_card(card: Rect2, e: Dictionary, collected: Array, focus_amount: float) -> void:
-	var map = overlay.map
-	var kw := String(e.get("kw", ""))
-	var got: bool = collected.has(kw)
-	var title := kw if got else "未辨残卷"
-	var desc := String(e.get("desc", "")) if got else "线索尚未归档。靠近坊市、建筑或对话触发后，将在此处显影。"
-	_round_rect_fill(card, 8.0, Color(0.97, 0.94, 0.87, 0.96))
-	_round_rect_stroke(card, 8.0, Color(0.5, 0.42, 0.3, 0.5), 1.2)
-	if focus_amount >= 0.98:
-		_round_rect_stroke(card.grow(-2.0), 6.0, Color(0.93, 0.75, 0.34, 0.5), 1.4)
-	var img_h := card.size.y * 0.5
-	var img_r := Rect2(card.position + Vector2(9.0, 9.0), Vector2(card.size.x - 18.0, img_h - 18.0))
-	_draw_codex_image_placeholder(img_r, got)
-	var text_top := card.position.y + img_h + 8.0
-	_text_left(map.font_song, title, 26.0, Color("#241a11"), Vector2(card.position.x + 14.0, text_top + 27.0))
-	draw_multiline_string(map.font_hei, Vector2(card.position.x + 14.0, text_top + 56.0), desc, HORIZONTAL_ALIGNMENT_LEFT, card.size.x - 28.0, 12.0, 2, Color("#554a37"), BRK)
+func _draw_knowledge_card(card: Rect2, e: Dictionary, focus_amount: float, page_anim: float, map) -> void:
+	var page: int = clampi(int(round(page_anim)), 0, 2)
+	var flip := absf(page_anim - float(page))
+	var scale_x := cos(flip * PI * 0.5)
+	scale_x = maxf(scale_x, 0.01)
+	var center_x := card.position.x + card.size.x * 0.5
+	var half_w := card.size.x * 0.5 * scale_x
+	var flipped_card := Rect2(center_x - half_w, card.position.y, half_w * 2.0, card.size.y)
+	if page == 0:
+		_draw_card_front(flipped_card, e, focus_amount, map)
+	elif page == 1:
+		_draw_card_back(flipped_card, e, focus_amount, map)
+	else:
+		_draw_card_spatial(flipped_card, e, focus_amount, map)
 	if focus_amount < 1.0:
-		var wht := (1.0 - focus_amount) * 0.62
-		_round_rect_fill(card, 8.0, Color(0.96, 0.95, 0.9, wht))
+		var wht := (1.0 - focus_amount) * 0.5
+		_round_rect_fill(card, 8.0, Color(0.0, 0.0, 0.0, wht))
 
-func _draw_codex_image_placeholder(r: Rect2, revealed: bool) -> void:
-	var map = overlay.map
-	_round_rect_fill(r, 4.0, Color("#e6e1d2", 0.6) if revealed else Color("#dcd6ca", 0.42))
-	_round_rect_stroke(r, 4.0, Color("#8a6a3a", 0.36), 1.0)
-	var alpha := 0.72 if revealed else 0.4
-	var pen := Color("#3a3021", alpha)
-	var ground_y := r.end.y - 13.0
-	_poly(PackedVector2Array([
-		Vector2(r.position.x + 6.0, ground_y),
-		Vector2(r.position.x + r.size.x * 0.34, r.position.y + r.size.y * 0.26),
-		Vector2(r.position.x + r.size.x * 0.6, ground_y - 2.0),
-	]), Color("#4b4231", alpha * 0.6))
-	_poly(PackedVector2Array([
-		Vector2(r.position.x + r.size.x * 0.44, ground_y - 1.0),
-		Vector2(r.position.x + r.size.x * 0.75, r.position.y + r.size.y * 0.32),
-		Vector2(r.end.x - 6.0, ground_y),
-	]), Color("#3a3021", alpha * 0.72))
-	draw_line(Vector2(r.position.x + 8.0, ground_y), Vector2(r.end.x - 8.0, ground_y - 2.0), pen, 1.4)
-	var hx := r.position.x + r.size.x * 0.5
-	var py := ground_y - 12.0
-	draw_line(Vector2(hx - 15.0, ground_y), Vector2(hx + 15.0, ground_y), pen, 1.6)
-	draw_line(Vector2(hx - 15.0, ground_y), Vector2(hx - 15.0, py - 8.0), pen, 1.4)
-	draw_line(Vector2(hx + 15.0, ground_y), Vector2(hx + 15.0, py - 8.0), pen, 1.4)
-	draw_line(Vector2(hx - 15.0, py - 8.0), Vector2(hx, py - 15.0), pen, 1.4)
-	draw_line(Vector2(hx + 15.0, py - 8.0), Vector2(hx, py - 15.0), pen, 1.4)
-	if not revealed:
-		_text_center(map.font_hei, "影像待显影", 12.0, Color(0.5, 0.5, 0.46, 0.9), r.get_center())
+func _draw_card_front(card: Rect2, e: Dictionary, focus: float, map) -> void:
+	_round_rect_fill(card, 8.0, Color("#1a1510"))
+	_round_rect_stroke(card, 8.0, Color(0.78, 0.65, 0.38, 0.6), 1.5)
+	if focus >= 0.98:
+		_round_rect_stroke(card.grow(-2.0), 6.0, Color(0.93, 0.75, 0.34, 0.5), 1.4)
+	var img_path := String(e.get("image", ""))
+	var img_h := card.size.y * 0.45
+	var img_r := Rect2(card.position.x + 10.0, card.position.y + 10.0, card.size.x - 20.0, img_h)
+	if img_path != "" and ResourceLoader.exists(img_path):
+		var tex = load(img_path)
+		if tex:
+			draw_texture_rect(tex, img_r, false)
+	else:
+		_round_rect_fill(img_r, 4.0, Color("#2a2318"))
+	var img_note := String(e.get("imageNote", ""))
+	if img_note != "":
+		_text_left(map.font_hei, img_note, 9.0, Color(0.7, 0.6, 0.4, 0.8), Vector2(img_r.position.x + 4.0, img_r.end.y - 6.0))
+	var text_y := img_r.end.y + 12.0
+	var pinyin := String(e.get("pinyin", ""))
+	if pinyin != "":
+		_text_left(map.font_hei, pinyin, 11.0, Color(0.7, 0.6, 0.4), Vector2(card.position.x + 14.0, text_y + 4.0))
+		text_y += 18.0
+	var name := String(e.get("name", ""))
+	_text_left(map.font_song, name, 24.0, Color("#f0e0b8"), Vector2(card.position.x + 14.0, text_y + 20.0))
+	text_y += 28.0
+	var subtitle := String(e.get("subtitle", ""))
+	if subtitle != "":
+		_text_left(map.font_hei, subtitle, 12.0, Color(0.85, 0.75, 0.5), Vector2(card.position.x + 14.0, text_y + 6.0))
+		text_y += 18.0
+	var period := String(e.get("period", ""))
+	if period != "":
+		_text_left(map.font_hei, period, 10.0, Color(0.6, 0.5, 0.35), Vector2(card.position.x + 14.0, text_y + 4.0))
+		text_y += 16.0
+	var summary := String(e.get("summary", ""))
+	if summary != "":
+		var summary_y := card.end.y - 80.0
+		draw_multiline_string(map.font_hei, Vector2(card.position.x + 14.0, summary_y), summary, HORIZONTAL_ALIGNMENT_LEFT, card.size.x - 28.0, 13.0, 3, Color(0.8, 0.72, 0.55), BRK)
+	var symbol := String(e.get("symbol", ""))
+	if symbol != "":
+		var seal_r := Rect2(card.end.x - 46.0, card.end.y - 46.0, 34.0, 34.0)
+		_round_rect_fill(seal_r, 3.0, Color(0.72, 0.18, 0.12, 0.85))
+		_text_center(map.font_song, symbol, 16.0, Color("#f0e0b8"), seal_r.get_center())
+
+func _draw_card_back(card: Rect2, e: Dictionary, focus: float, map) -> void:
+	_round_rect_fill(card, 8.0, Color("#1c1812"))
+	_round_rect_stroke(card, 8.0, Color(0.78, 0.65, 0.38, 0.6), 1.5)
+	if focus >= 0.98:
+		_round_rect_stroke(card.grow(-2.0), 6.0, Color(0.93, 0.75, 0.34, 0.5), 1.4)
+	var y := card.position.y + 16.0
+	var type_label := String(e.get("typeLabel", ""))
+	var name := String(e.get("name", ""))
+	_text_left(map.font_song, name, 20.0, Color("#f0e0b8"), Vector2(card.position.x + 14.0, y + 16.0))
+	var badge_r := Rect2(card.position.x + 14.0, y + 24.0, float(type_label.length()) * 14.0 + 12.0, 22.0)
+	_round_rect_fill(badge_r, 3.0, Color(0.72, 0.18, 0.12, 0.7))
+	_text_center(map.font_hei, type_label, 11.0, Color("#f0e0b8"), badge_r.get_center())
+	y += 56.0
+	draw_line(Vector2(card.position.x + 14.0, y), Vector2(card.end.x - 14.0, y), Color(0.6, 0.5, 0.3, 0.4), 1.0)
+	y += 10.0
+	var facts: Array = e.get("facts", [])
+	for f in facts:
+		if f is Array and f.size() >= 2:
+			var label := String(f[0])
+			var value := String(f[1])
+			_text_left(map.font_hei, label, 11.0, Color(0.6, 0.5, 0.35), Vector2(card.position.x + 14.0, y + 10.0))
+			_text_left(map.font_song, value, 13.0, Color("#e0d0a8"), Vector2(card.position.x + 70.0, y + 10.0))
+			y += 22.0
+	y += 8.0
+	draw_line(Vector2(card.position.x + 14.0, y), Vector2(card.end.x - 14.0, y), Color(0.6, 0.5, 0.3, 0.4), 1.0)
+	y += 10.0
+	var ev_type := String(e.get("evidenceType", ""))
+	if ev_type != "":
+		_text_left(map.font_hei, ev_type, 10.0, Color(0.5, 0.7, 0.5), Vector2(card.position.x + 14.0, y + 8.0))
+		y += 18.0
+	var quote := String(e.get("quote", ""))
+	if quote != "":
+		draw_multiline_string(map.font_song, Vector2(card.position.x + 20.0, y + 12.0), quote, HORIZONTAL_ALIGNMENT_LEFT, card.size.x - 40.0, 12.0, 4, Color(0.85, 0.78, 0.58), BRK)
+		y += 60.0
+	var source := String(e.get("source", ""))
+	if source != "":
+		_text_left(map.font_hei, "—— " + source, 10.0, Color(0.55, 0.48, 0.35), Vector2(card.position.x + 14.0, y + 4.0))
+
+func _draw_card_spatial(card: Rect2, e: Dictionary, focus: float, map) -> void:
+	_round_rect_fill(card, 8.0, Color("#141820"))
+	_round_rect_stroke(card, 8.0, Color(0.5, 0.6, 0.7, 0.5), 1.5)
+	if focus >= 0.98:
+		_round_rect_stroke(card.grow(-2.0), 6.0, Color(0.4, 0.6, 0.8, 0.4), 1.4)
+	var card_type := String(e.get("type", ""))
+	var spatial: Dictionary = map._spatial_info
+	var info: Dictionary = spatial.get(card_type, {})
+	var text := String(info.get("text", ""))
+	var src := String(info.get("source", ""))
+	var y := card.position.y + 20.0
+	_text_center(map.font_song, "空间关系 · " + String(e.get("typeLabel", "")), 16.0, Color("#a0c0d8"), Vector2(card.get_center().x, y + 8.0))
+	y += 32.0
+	draw_line(Vector2(card.position.x + 20.0, y), Vector2(card.end.x - 20.0, y), Color(0.4, 0.5, 0.6, 0.4), 1.0)
+	y += 14.0
+	if text != "":
+		draw_multiline_string(map.font_hei, Vector2(card.position.x + 16.0, y + 6.0), text, HORIZONTAL_ALIGNMENT_LEFT, card.size.x - 32.0, 13.0, 12, Color(0.75, 0.82, 0.88), BRK)
+	if src != "":
+		_text_left(map.font_hei, "—— " + src, 10.0, Color(0.5, 0.55, 0.6), Vector2(card.position.x + 16.0, card.end.y - 24.0))
 
 # ==================== 大事记列表 ====================
 func _draw_hist_list() -> void:
@@ -113,9 +184,9 @@ func _draw_hist_list() -> void:
 # ==================== 图鉴条目列表 ====================
 func _draw_codex_list() -> void:
 	var map = overlay.map
-	var entries: Array = map.codex_entries(map._codex_cat)
-	var collected: Array = map.codex_collected_list(map._codex_cat)
-	var focus: int = clampi(map._codex_focus, 0, maxi(0, entries.size() - 1))
+	var entries: Array = map.codex_entries(map._card_type_idx)
+	var collected: Array = map.codex_collected_list(map._card_type_idx)
+	var focus: int = clampi(map._card_focus, 0, maxi(0, entries.size() - 1))
 	for i in range(entries.size()):
 		var er: Rect2 = map.codex_entry_rect(i)
 		var local := Rect2(er.position - position, er.size)

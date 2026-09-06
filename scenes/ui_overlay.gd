@@ -91,11 +91,11 @@ func _ready() -> void:
 
 func _load_card_textures() -> void:
 	var paths := {
-		"gate": "res://prototypes/knowledge-cards/assets/zhuque-gate-form-reference.png",
-		"fang": "res://prototypes/knowledge-cards/assets/fang-main-transparent.png",
-		"road": "res://prototypes/knowledge-cards/assets/zhuque-avenue-main.png",
-		"canal": "res://prototypes/knowledge-cards/assets/yongan-canal-main.png",
-		"building": "res://prototypes/knowledge-cards/assets/building-main-transparent.png",
+		"gate": "res://assets/cards/zhuque-gate-form-reference.png",
+		"fang": "res://assets/cards/fang-main-transparent.png",
+		"road": "res://assets/cards/zhuque-avenue-main.png",
+		"canal": "res://assets/cards/yongan-canal-main.png",
+		"building": "res://assets/cards/building-main-transparent.png",
 	}
 	for key in paths:
 		var path: String = paths[key]
@@ -148,7 +148,7 @@ func _load_ink_textures() -> void:
 	_ink_unlock_glow = _load_optional_texture("res://assets/ui/ink/ui_unlock_glow.png")
 	_ink_gold_dust = _load_optional_texture("res://assets/ui/ink/ui_gold_dust_strip.png")
 	_ink_hover_mist = _load_optional_texture("res://assets/ui/ink/ui_hover_mist.png")
-	_ink_selection_ring = _load_optional_texture("res://assets/ui/ink/ui_selection_ink_ring.png")
+	_ink_selection_ring = _load_optional_texture("res://assets/ui/ink/ui_selection_ink.png")
 
 func _process(delta: float) -> void:
 	var next_hover := _detect_ui_hover()
@@ -220,15 +220,12 @@ func _detect_ui_hover() -> String:
 			var close_r := Rect2(map.codex_panel_rect().end.x - 44.0, map.codex_panel_rect().position.y + 12.0, 28.0, 28.0)
 			if close_r.has_point(p):
 				return "codex_close"
-			for i in range(3):
-				if map.codex_cat_rect(i).has_point(p):
-					return "codex_cat_%d" % i
-			var entries: Array = map.codex_entries(map._codex_cat)
-			for i in range(entries.size()):
-				if map.codex_entry_rect(i).has_point(p):
-					return "codex_entry_%d" % i
-			if map.codex_detail_rect().has_point(p):
-				return "codex_detail"
+			for i in range(5):
+				if map.codex_type_rect(i).has_point(p):
+					return "codex_type_%d" % i
+			for j in range(3):
+				if map.codex_page_btn_rect(j).has_point(p):
+					return "codex_page_%d" % j
 			return "codex_panel"
 		return ""
 	if map.HIST_TIMELINE_RECT.has_point(p):
@@ -690,16 +687,22 @@ func _draw_codex_panel() -> void:
 	# 关闭按钮（右上角）
 	var close_r := Rect2(pr.end.x - 44.0, pr.position.y + 12.0, 28.0, 28.0)
 	_draw_ink_close(close_r, 1.0, "codex_close")
-	for i in range(3):
-		var cr: Rect2 = map.codex_cat_rect(i)
-		var active: bool = map._codex_cat == i
-		var cnt: int = map.codex_collected_count(i)
-		var total: int = map.codex_entries(i).size()
-		var key := "codex_cat_%d" % i
+	for i in range(5):
+		var cr: Rect2 = map.codex_type_rect(i)
+		var active: bool = map._card_type_idx == i
+		var cnt: int = map._cards_of_type(i).size()
+		var key := "codex_type_%d" % i
 		_draw_ink_component(_ink_codex_tab_active if active else _ink_codex_tab_normal, cr, 7.0, Color(0.79, 0.64, 0.36, 0.85) if active else Color(0.16, 0.26, 0.29, 0.7), Color(0.79, 0.64, 0.36, 0.6), 1.0, key, active)
 		var tab_col := Color("#1f1810") if active else (Color("#fff0aa") if _is_hot(key) else Color("#eaf1f0"))
-		_text_center(map.font_song, map.codex_cat_name(i), 13.0, tab_col, cr.get_center() + Vector2(0.0, -3.0))
-		_text_center(map.font_hei, "%d/%d" % [cnt, total], 9.0, Color("#6a4b25", 0.88) if active else Color("#b6a37c", 0.7), cr.get_center() + Vector2(0.0, 12.0))
+		_text_center(map.font_song, map.codex_cat_name(i), 12.0, tab_col, cr.get_center())
+	for j in range(3):
+		var pbr: Rect2 = map.codex_page_btn_rect(j)
+		var page_active: bool = map._card_page == (j + 1)
+		var pkey := "codex_page_%d" % j
+		var page_labels := ["正面", "知识", "空间"]
+		var pcol := Color("#1f1810") if page_active else (Color("#fff0aa") if _is_hot(pkey) else Color("#eaf1f0"))
+		_draw_ink_component(_ink_codex_tab_active if page_active else _ink_codex_tab_normal, pbr, 5.0, Color(0.79, 0.64, 0.36, 0.85) if page_active else Color(0.16, 0.26, 0.29, 0.7), Color(0.79, 0.64, 0.36, 0.6), 1.0, pkey, page_active)
+		_text_center(map.font_hei, page_labels[j], 11.0, pcol, pbr.get_center())
 	# 知识卡片轮播：放入裁剪容器内绘制，超出外框的部分被隐藏
 	var area: Rect2 = map.codex_card_area()
 	_codex_clip.kind = "codex_cards"
@@ -815,22 +818,21 @@ func _draw_ink_close(rect: Rect2, alpha := 1.0, key := "") -> void:
 	draw_line(cc + Vector2(-4, -4), cc + Vector2(4, 4), _ca(Color.WHITE, alpha), 2.5)
 	draw_line(cc + Vector2(-4, 4), cc + Vector2(4, -4), _ca(Color.WHITE, alpha), 2.5)
 	_draw_hover_accent(rect, 6.0, key, alpha)
-
-func _para_fill(rect: Rect2, skew: float, color: Color) -> void:
+func _para_fill(r: Rect2, skew: float, color: Color) -> void:
 	var pts := PackedVector2Array([
-		Vector2(rect.position.x + skew, rect.position.y),
-		Vector2(rect.end.x + skew, rect.position.y),
-		Vector2(rect.end.x, rect.end.y),
-		Vector2(rect.position.x, rect.end.y),
+		Vector2(r.position.x + skew, r.position.y),
+		Vector2(r.end.x + skew, r.position.y),
+		Vector2(r.end.x, r.end.y),
+		Vector2(r.position.x, r.end.y),
 	])
 	_poly(pts, color)
 
-func _para_stroke(rect: Rect2, skew: float, color: Color, width: float) -> void:
+func _para_stroke(r: Rect2, skew: float, color: Color, width: float) -> void:
 	var pts := PackedVector2Array([
-		Vector2(rect.position.x + skew, rect.position.y),
-		Vector2(rect.end.x + skew, rect.position.y),
-		Vector2(rect.end.x, rect.end.y),
-		Vector2(rect.position.x, rect.end.y),
+		Vector2(r.position.x + skew, r.position.y),
+		Vector2(r.end.x + skew, r.position.y),
+		Vector2(r.end.x, r.end.y),
+		Vector2(r.position.x, r.end.y),
 	])
 	for i in range(4):
 		draw_line(pts[i], pts[(i + 1) % 4], color, width)
@@ -1185,8 +1187,8 @@ func _text_right(font: Font, text: String, fs: float, color: Color, right: Vecto
 
 func _poly(points: PackedVector2Array, color: Color) -> void:
 	var idx := Geometry2D.triangulate_polygon(points)
-	for t in range(0, idx.size(), 3):
-		draw_colored_polygon(PackedVector2Array([points[idx[t]], points[idx[t + 1]], points[idx[t + 2]]]), color)
+	for i in range(0, idx.size(), 3):
+		draw_colored_polygon(PackedVector2Array([points[idx[i]], points[idx[i + 1]], points[idx[i + 2]]]), color)
 
 func _round_rect_pts(r: Rect2, radius: float) -> PackedVector2Array:
 	var x := r.position.x

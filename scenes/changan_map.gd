@@ -31,7 +31,7 @@ const HIST_YEAR_MAX := 907
 # 右上角时间指示区域（地平线 + 太阳月亮）点击可切换时辰
 const TIME_AREA_RECT := Rect2(1112.0, 18.0, 166.0, 108.0)
 const SHICHEN := ["子时", "丑时", "寅时", "卯时", "辰时", "巳时", "午时", "未时", "申时", "酉时", "戌时", "亥时"]
-const CODEX_CATS := ["衣食住行", "建筑与城市规划", "历史"]
+const CARD_TYPES := ["Gate", "Fang", "Road", "Canal", "Building"]
 
 # isometric tile size (2:1)
 const TW := 128.0
@@ -177,12 +177,14 @@ var _kepu_kb: Dictionary = {}
 var _followups: Array = []
 var _speaking: Array = []
 var _speak_spawn_timer := 2.0
-var _codex_kb: Dictionary = {}
-var _codex_collected: Dictionary = {}
+var _cards: Array = []
+var _spatial_info: Dictionary = {}
+var _card_page := 1
+var _card_page_anim := 0.0
 var _codex_open := false
-var _codex_cat := 0
-var _codex_focus := 0
-var _codex_focus_anim := 0.0   # 焦点卡片滑动动画（非线性，向 _codex_focus 逼近）
+var _card_type_idx := 0
+var _card_focus := 0
+var _card_focus_anim := 0.0   # 焦点卡片滑动动画（非线性，向 _card_focus 逼近）
 var _codex_dragging := false    # 正在拖拽滑动图鉴卡片
 var _codex_drag_x := 0.0
 var _codex_drag_focus := 0.0
@@ -368,13 +370,12 @@ func _sync_from_data() -> void:
 	_points = DataManager.points
 	_kepu_kb = DataManager.kepu_kb
 	_timeline = DataManager.timeline
-	_codex_kb = DataManager.codex_kb
+	_cards = DataManager.knowledge_cards
+	_spatial_info = DataManager.spatial_info
 	_cfg = DataManager.llm_config
 	if _kepu_kb.is_empty():
 		_kepu_kb = KEPU
-	_codex_collected = {}
-	for cat in _codex_kb:
-		_codex_collected[cat] = []
+
 	GameManager.current_year = _current_year
 	GameManager.time_of_day = _time_of_day
 	_year_display = float(_current_year)
@@ -1127,13 +1128,19 @@ func timeline_event_at_x(x: float) -> int:
 func codex_panel_rect() -> Rect2:
 	# 居中于 1280x720 UI 逻辑画布（Overlay 被 scale 放大到视口）
 	var w := 720.0
-	var h := 600.0
-	return Rect2((UI_DESIGN_W - w) * 0.5, 60.0, w, h)
+	var h := 680.0
+	return Rect2((UI_DESIGN_W - w) * 0.5, 20.0, w, h)
 
-func codex_cat_rect(i: int) -> Rect2:
+func codex_type_rect(i: int) -> Rect2:
 	var pr := codex_panel_rect()
-	var w := (pr.size.x - 48.0) / 3.0
+	var w := (pr.size.x - 48.0) / 5.0
 	return Rect2(pr.position.x + 18.0 + float(i) * w, pr.position.y + 70.0, w - 7.0, 34.0)
+
+func codex_page_btn_rect(i: int) -> Rect2:
+	var pr := codex_panel_rect()
+	var total_w := 3.0 * 120.0
+	var start_x := pr.position.x + (pr.size.x - total_w) * 0.5
+	return Rect2(start_x + float(i) * 120.0, pr.position.y + 112.0, 110.0, 30.0)
 
 func codex_entry_rect(i: int) -> Rect2:
 	var pr := codex_panel_rect()
@@ -1149,31 +1156,50 @@ func codex_max_scroll() -> float:
 	var detail_rect := codex_detail_rect()
 	var list_top: float = pr.position.y + 116.0
 	var list_h := detail_rect.position.y - 8.0 - list_top
-	var content_h := float(codex_entries(_codex_cat).size()) * 52.0
+	var content_h := float(codex_entries(_card_type_idx).size()) * 52.0
 	return maxf(0.0, content_h - list_h)
 
 # ---- 图鉴知识卡片轮播 ----
 func codex_card_size() -> Vector2:
-	return Vector2(300.0, 450.0)  # 2:3 竖卡
+	return Vector2(340.0, 480.0)
 
 func codex_card_stride() -> float:
 	return codex_card_size().x + 28.0
 
 func codex_card_area() -> Rect2:
 	var pr := codex_panel_rect()
-	var top: float = pr.position.y + 132.0
+	var top: float = pr.position.y + 152.0
 	return Rect2(pr.position.x + 10.0, top, pr.size.x - 20.0, pr.end.y - 16.0 - top)
 
 func codex_card_count() -> int:
-	return codex_entries(_codex_cat).size()
+	return _cards_of_type(_card_type_idx).size()
+
+func _cards_of_type(type_idx: int) -> Array:
+	if type_idx < 0 or type_idx >= CARD_TYPES.size():
+		return []
+	var t: String = CARD_TYPES[type_idx]
+	var result := []
+	for card in _cards:
+		if card.get("type", "") == t:
+			result.append(card)
+	return result
+
+func _current_card() -> Dictionary:
+	var cards := _cards_of_type(_card_type_idx)
+	if cards.is_empty():
+		return {}
+	var idx := clampi(_card_focus, 0, cards.size() - 1)
+	return cards[idx]
 
 # 焦点卡片滑动动画（非线性缓动）
 func _update_codex_carousel(delta: float) -> void:
-	var target := float(_codex_focus)
+	var target := float(_card_focus)
 	if not _codex_dragging:
-		_codex_focus_anim = lerpf(_codex_focus_anim, target, delta * 6.0)
+		_card_focus_anim = lerpf(_card_focus_anim, target, delta * 6.0)
 	else:
-		_codex_focus_anim = clampf(_codex_drag_focus, 0.0, maxf(0.0, float(codex_card_count() - 1)))
+		_card_focus_anim = clampf(_codex_drag_focus, 0.0, maxf(0.0, float(codex_card_count() - 1)))
+	var page_target := float(_card_page - 1)
+	_card_page_anim = lerpf(_card_page_anim, page_target, delta * 8.0)
 
 # 给定屏幕坐标，返回命中的图鉴卡片索引（-1 为未命中）
 func codex_card_at(pos: Vector2) -> int:
@@ -1185,7 +1211,7 @@ func codex_card_at(pos: Vector2) -> int:
 		return -1
 	var center := Vector2(area.get_center().x, area.get_center().y)
 	for i in range(count):
-		var d := _codex_focus_anim - float(i)
+		var d := _card_focus_anim - float(i)
 		var cx := center.x - d * stride
 		var card := Rect2(Vector2(cx - csize.x * 0.5, center.y - csize.y * 0.5), csize)
 		if card.has_point(pos):
@@ -1193,22 +1219,22 @@ func codex_card_at(pos: Vector2) -> int:
 	return -1
 
 func codex_collected_count(cat: int) -> int:
-	if cat < 0 or cat >= CODEX_CATS.size():
-		return 0
-	return _codex_collected.get(CODEX_CATS[cat], []).size()
+	return _cards_of_type(cat).size()
 
 func codex_entries(cat: int) -> Array:
-	if cat < 0 or cat >= CODEX_CATS.size():
-		return []
-	return _codex_kb.get(CODEX_CATS[cat], [])
+	return _cards_of_type(cat)
 
 func codex_cat_name(i: int) -> String:
-	return CODEX_CATS[i]
+	if i < 0 or i >= CARD_TYPES.size():
+		return ""
+	var labels := {"Gate": "城门", "Fang": "里坊", "Road": "道路", "Canal": "水渠", "Building": "建筑"}
+	return labels.get(CARD_TYPES[i], "")
 
 func codex_collected_list(cat: int) -> Array:
-	if cat < 0 or cat >= CODEX_CATS.size():
-		return []
-	return _codex_collected.get(CODEX_CATS[cat], [])
+	var result := []
+	for card in _cards_of_type(cat):
+		result.append(card.get("name", ""))
+	return result
 
 # 参数为 1280x720 设计系坐标：左侧拦截带（左栏）与底部时间轴带
 func _is_screen_ui_band(p: Vector2) -> bool:
@@ -1474,7 +1500,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			var wmb := event as InputEventMouseButton
 			var up := screen_to_ui(wmb.position)
 			if _codex_open and codex_panel_rect().has_point(up):
-				_codex_focus = clampi(_codex_focus - 1, 0, maxi(0, codex_card_count() - 1))
+				_card_focus = clampi(_card_focus - 1, 0, maxi(0, codex_card_count() - 1))
 				_ui.queue_redraw()
 			elif _hist_open and hist_popup_rect().has_point(up):
 				_hist_scroll = maxf(0.0, _hist_scroll - 40.0)
@@ -1491,7 +1517,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			var wmb2 := event as InputEventMouseButton
 			var up2 := screen_to_ui(wmb2.position)
 			if _codex_open and codex_panel_rect().has_point(up2):
-				_codex_focus = clampi(_codex_focus + 1, 0, maxi(0, codex_card_count() - 1))
+				_card_focus = clampi(_card_focus + 1, 0, maxi(0, codex_card_count() - 1))
 				_ui.queue_redraw()
 			elif _hist_open and hist_popup_rect().has_point(up2):
 				_hist_scroll = minf(_hist_scroll + 40.0, hist_max_scroll())
@@ -1514,7 +1540,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _codex_open and codex_card_area().has_point(mp) and codex_card_count() > 0:
 					# 图鉴知识卡片拖拽滑动
 					_codex_dragging = true
-					_codex_drag_focus = _codex_focus_anim
+					_codex_drag_focus = _card_focus_anim
 					_codex_drag_x = mp.x
 					_dragging = false
 					_moved = false
@@ -1531,7 +1557,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_dragging = false
 				if _codex_dragging:
 					_codex_dragging = false
-					_codex_focus = clampi(int(round(_codex_drag_focus)), 0, maxi(0, codex_card_count() - 1))
+					_card_focus = clampi(int(round(_codex_drag_focus)), 0, maxi(0, codex_card_count() - 1))
 					_ui.queue_redraw()
 					return
 				if not _moved:
@@ -1611,16 +1637,21 @@ func _handle_click(screen_pos: Vector2) -> void:
 				_codex_open = false
 				_ui.queue_redraw()
 				return
-			for i in range(3):
-				if codex_cat_rect(i).has_point(ui_pos):
-					_codex_cat = i
-					_codex_focus = 0
+			for i in range(5):
+				if codex_type_rect(i).has_point(ui_pos):
+					_card_type_idx = i
+					_card_focus = 0
 					_codex_scroll = 0.0
+					_ui.queue_redraw()
+					return
+			for j in range(3):
+				if codex_page_btn_rect(j).has_point(ui_pos):
+					_card_page = j + 1
 					_ui.queue_redraw()
 					return
 			var ci := codex_card_at(ui_pos)
 			if ci >= 0:
-				_codex_focus = ci
+				_card_focus = ci
 				_ui.queue_redraw()
 				return
 			return
@@ -2046,21 +2077,11 @@ func _detect_kepu(lines: Array) -> void:
 func _detect_codex(text: String) -> void:
 	if text == "":
 		return
-	var changed := false
-	for cat in CODEX_CATS:
-		var entries: Array = _codex_kb.get(cat, [])
-		var collected: Array = _codex_collected.get(cat, [])
-		for e in entries:
-			var kw := String(e.get("kw", ""))
-			if kw != "" and text.contains(kw) and not collected.has(kw):
-				collected.append(kw)
-				changed = true
-				EventBus.codex_entry_collected.emit(cat, kw)
-		_codex_collected[cat] = collected
-	GameManager.codex_collected = _codex_collected
-	if changed and _ui:
-		_ui.queue_redraw()
-
+	for card in _cards:
+		var cname := String(card.get("name", ""))
+		if cname != "" and text.contains(cname):
+			var cat_name := String(card.get("typeLabel", ""))
+			EventBus.codex_entry_collected.emit(cat_name, cname)
 func _hit_test(pos: Vector2) -> Dictionary:
 	for p in _points:
 		var gp := point_grid_position(p)
