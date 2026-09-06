@@ -1,4 +1,4 @@
-extends Node
+﻿extends Node
 # 数据管理器（DataManager）——统一解析并缓存本地 JSON 数据。
 # 图谱工程师/策划只需维护 data/ 目录，其他模块从这里读取，不直接碰文件。
 
@@ -7,8 +7,6 @@ var kepu_kb: Dictionary = {}
 var codex_kb: Dictionary = {}
 var knowledge_cards: Array = []
 var spatial_info: Dictionary = {}
-var far_view_cards: Array = []
-var far_mini_maps: Dictionary = {}
 var timeline: Array = []
 var llm_config: Dictionary = {}
 
@@ -16,7 +14,6 @@ const POINTS_PATH := "res://data/changan_points.json"
 const KEPU_KB_PATH := "res://data/kepu_kb.json"
 const CODEX_PATH := "res://data/codex_kb.json"
 const KNOWLEDGE_CARDS_PATH := "res://data/knowledge_cards.json"
-const FAR_VIEW_CARDS_PATH := "res://data/far_view_cards.json"
 const HISTORY_PATH := "res://data/history_timeline.json"
 const CONFIG_PATH := "res://config/llm_config.json"
 
@@ -34,11 +31,6 @@ func load_all() -> void:
 		knowledge_cards = kc_data["cards"]
 	if kc_data.has("spatial_info"):
 		spatial_info = kc_data["spatial_info"]
-	var fv_data := _load_dict(FAR_VIEW_CARDS_PATH)
-	if fv_data.has("cards"):
-		far_view_cards = fv_data["cards"]
-	if fv_data.has("mini_maps"):
-		far_mini_maps = fv_data["mini_maps"]
 
 func _load_dict(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
